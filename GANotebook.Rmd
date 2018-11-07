@@ -1,0 +1,341 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+```{r Libraries}
+library(jsonlite)
+library(tidyverse)
+library(caret)
+library(lubridate)
+```
+
+
+
+
+
+
+
+```{r Load and Parse Data}
+load_data <- function(){
+    train_df <- read.csv("ProjectData/train.csv",stringsAsFactors = FALSE , colClasses = ("fullVisitorId" = "character"))
+    test_df <- read.csv("ProjectData/test.csv", stringsAsFactors = FALSE,colClasses = ("fullVisitorId" = "character"))
+    
+    #Extract data from the json columns in TRAIN
+    device_json_df <- paste("[", paste(train_df$device, collapse = ","), "]") %>% 
+                        fromJSON(flatten = T)
+    
+    geo_network_json_df <- paste("[", paste(train_df$geoNetwork, collapse = ","), "]") %>% 
+                        fromJSON(flatten = T)
+    
+    total_json_df <- paste("[", paste(train_df$totals, collapse = ","), "]") %>% 
+                        fromJSON(flatten = T)
+    
+    traffic_json_df <- paste("[", paste(train_df$trafficSource, collapse = ","), "]") %>% 
+                          fromJSON(flatten = T)
+    
+    train_df <- cbind(train_df,device_json_df,geo_network_json_df,total_json_df,traffic_json_df)
+    
+    
+    #Drop the json columns
+    train_df <- select(train_df,  -one_of(c("device","geoNetwork","totals","trafficSource")))  
+    
+    #Extract data from the json columns in TEST
+    device_json_df <- paste("[", paste(test_df$device, collapse = ","), "]") %>% 
+      fromJSON(flatten = T)
+    
+    geo_network_json_df <- paste("[", paste(test_df$geoNetwork, collapse = ","), "]") %>% 
+      fromJSON(flatten = T)
+    
+    total_json_df <- paste("[", paste(test_df$totals, collapse = ","), "]") %>% 
+      fromJSON(flatten = T)
+    
+    traffic_json_df <- paste("[", paste(test_df$trafficSource, collapse = ","), "]") %>% 
+      fromJSON(flatten = T)
+    
+    test_df <- cbind(test_df,device_json_df,geo_network_json_df,total_json_df,traffic_json_df)
+    
+    test_df <- select(test_df,  -one_of(c("device","geoNetwork","totals","trafficSource"))) 
+    
+    rm(device_json_df,geo_network_json_df,total_json_df,traffic_json_df)
+    
+    saveRDS(train_df,"ProjectData/train_df")
+    saveRDS(test_df,"ProjectData/test_df")
+    
+}
+
+```
+
+
+```{r}
+if (!file.exists("ProjectData/train_df" ) | !file.exists("ProjectData/test_df" )){
+  cat("Loading Saved Data... \n")
+    train_df <-  readRDS("ProjectData/train_df" )
+    test_df <- readRDS("ProjectData/test_df")
+} else {
+  cat("Preparing and Loading Data...")
+    load_data()
+    train_df <-  readRDS("ProjectData/train_df" )
+    test_df <- readRDS("ProjectData/test_df")
+} 
+```
+
+
+Structure of Train Dataset:
+```{r}
+glimpse(train_df)
+```
+```{r}
+colSums(is.na(train_df))
+```
+
+
+```{r}
+unique_length <- function (x){
+  #Function to calculate no. of unique values in a variable
+  length(unique(x))
+}
+```
+
+  
+  
+No of unique elements in each column of Train
+```{r}
+sapply(train_df, unique_length) %>% as.data.frame()
+```
+
+Transaction Revenue is the target column. Or rather the natural log of the transaction Revenue
+  
+There are multiple columns in the train set which have only one unique value. We can remove these columns.
+
+```{r}
+remove_columns <- function(df,cols_to_remove){
+  #Function to check existence of column and if exists, remove it
+  df[,cols_to_remove] <- NULL
+  return(df)
+}
+```
+
+Identify all features with just one unique value
+```{r}
+cols_to_remove <- data.frame(Feature = names(sapply(train_df, unique_length)),  Freq=data.frame(sapply(train_df, unique_length))[,1])  %>%
+  filter(Freq==1) %>%
+  select(Feature) %>%
+  .$Feature %>%
+  as.character()
+  
+```
+
+
+
+```{r}
+train_df <- remove_columns(train_df,cols_to_remove = cols_to_remove)
+```
+
+```{r}
+nearZeroVarCols <- names(train_df[,nearZeroVar(train_df)])
+nearZeroVarCols
+```
+
+```{r}
+sapply(train_df[,nearZeroVarCols], unique_length) %>% as.data.frame()
+```
+
+```{r}
+colSums(is.na(train_df))
+```
+```{r}
+glimpse(train_df)
+```
+
+
+#####ANanlyzing Transaction Revenue
+
+First convert it into numeric
+```{r}
+train_df$transactionRevenue <- as.numeric(train_df$transactionRevenue)
+```
+
+Converting NAs in Transaction Revenues to 0
+```{r}
+train_df$transactionRevenue <- ifelse(is.na(train_df$transactionRevenue),0,train_df$transactionRevenue)
+```
+
+Add a REVENUE_GENERATED column to the data frame
+```{r}
+train_df$REVENUE_GENERATED = ifelse(train_df$transactionRevenue ==0 , FALSE, TRUE)
+```
+
+No. Of Transaction generating Revenue 
+```{r}
+cat("No. of revenue generating transactions: ", nrow(train_df[train_df$REVENUE_GENERATED==TRUE,]))
+cat("\nNo. of non-revenue generating transactions: ", nrow(train_df[train_df$REVENUE_GENERATED==FALSE,]))
+cat("\nProportion of revenue generating transactions: ",nrow(train_df[train_df$REVENUE_GENERATED==TRUE,]) / nrow(train_df) *100 ,"%")
+```
+
+```{r}
+train_df %>% 
+  group_by(fullVisitorId) %>%
+  mutate(sum_Revenue = sum(ifelse(is.na(transactionRevenue),0,transactionRevenue))) %>%
+  select(fullVisitorId,sum_Revenue) %>%
+  filter(sum_Revenue==0) %>%
+  nrow
+```
+
+
+
+
+
+######Channel Grouping
+```{r}
+unique(train_df$channelGrouping)
+```
+
+PErcent Distribution of channel grouping
+```{r}
+prop.table(table(train_df$channelGrouping, useNA = "ifany") ) *100
+```
+
+```{r}
+prop.table(table(train_df$channelGrouping, useNA = "ifany" )) %>%
+  as.data.frame() %>%
+  ggplot() + geom_bar(aes(x=Var1, y =Freq*100,fill=Var1 ), stat="identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) +xlab("Channel Grouping") + ylab("% of Total")
+```
+
+Percent distribution of Revenue Generating Transaction for Channel Grouping
+
+```{r}
+prop.table(table(train_df$channelGrouping[train_df$REVENUE_GENERATED == TRUE], useNA = "ifany" )) %>%
+  as.data.frame() %>%
+  ggplot() + geom_bar(aes(x=Var1, y =Freq*100,fill=Var1 ), stat="identity") + theme(axis.text.x = element_text(angle = 90, hjust = 1)) +xlab("Channel Grouping") + ylab("% of Total")
+```
+For transactions generating revenue, these are the most popular channels:  
+* Referral (~50% revenue generating transactions )  
+* Organic Search (~30%)  
+* Direct (~17%)  
+
+So while Organic Search is the most common channel, revenue generating transactions come mostly from the Referrals.
+
+
+#####Checking Date
+
+```{r}
+class(train_df$date)
+train_df$date[1:6]
+train_df$date <- ymd(train_df$date)
+range(train_df$date)
+```
+
+Training Data has dates from 01-08-2016 to 01-08-2018. i.e One year data
+
+```{r}
+test_df$date <- ymd(test_df$date)
+range(test_df$date)
+```
+Testing data has dates from 02-08-2017 to 30-04-2018. Almost nine year data
+
+Checking distribution of transactions month wise
+
+```{r}
+train_df %>%
+  group_by(Month = as.factor(month(date))) %>%
+  summarize( Count =n()) %>%
+  select(Month, Count) %>%
+  ggplot() + geom_bar(aes(x= Month, y = Count, fill = Month), stat= "identity") + ylab("No. Of Visit") + xlab("Month") + labs(title = "Distribution of Transaction")
+  
+```
+
+Year ending months October, November and December have highest transactions
+
+```{r}
+train_df %>%
+  filter(REVENUE_GENERATED) %>%
+  group_by(Month = as.factor(month(date))) %>%
+  summarize( Count =n()) %>%
+  select(Month, Count)  %>%
+  ggplot() + geom_bar(aes(x= Month, y = Count, fill = Month), stat= "identity") + ylab("No. Of Visit") + xlab("Month") + labs(title = "Distribution of Revenue Generating Transactions")
+```
+
+December has the highest number of revenue generating transactions.
+
+It will be interesting to see what proportion of transactions each month are revenue generating
+
+```{r}
+train_df %>%
+  mutate(Month = as.factor(month(date))) %>%
+  group_by(Month) %>%
+  #summarize() %>%
+  summarize(Month_Transaction = n(),Revenue_Transaction = sum(REVENUE_GENERATED), Proportion = Revenue_Transaction/Month_Transaction*100) %>%
+  select (Month,Month_Transaction,Revenue_Transaction,Proportion) 
+```
+```{r}
+train_df %>%
+  mutate(Month = as.factor(month(date))) %>%
+  group_by(Month) %>%
+  #summarize() %>%
+  summarize(Month_Transaction = n(),Revenue_Transaction = sum(REVENUE_GENERATED), Proportion = Revenue_Transaction/Month_Transaction*100) %>%
+  select (Month,Month_Transaction,Revenue_Transaction,Proportion) %>%
+  ggplot() + geom_bar(aes(Month,Proportion, fill=Month), stat="identity")
+```
+ May and December have the highest proportion of transactions which are revenue generating
+ 
+ #####Analyzing visit number
+ Convert visit number to numeric
+```{r}
+train_df$visitNumber <- as.numeric(train_df$visitNumber)
+```
+ 
+```{r}
+unique(train_df$visitNumber)
+cat("Visit Number has ", length(unique(train_df$visitNumber)) ," unique values")
+```
+ 
+```{r}
+ggplot(train_df) + geom_histogram(aes(x= visitNumber), stat="count", binwidth = 40)
+```
+
+Visit Numbers are mostly very small
+```{r}
+boxplot(train_df$visitNumber)
+quantile(train_df$visitNumber)
+```
+
+```{r}
+train_df %>%
+  group_by(visitNumber) %>%
+  summarize(Freq = n()) %>%
+  arrange(desc(Freq)) %>%
+  select(visitNumber,Freq) %>%
+  head(30)
+```
+
+Does probability of revenue increase with larger visit numbers?
+
+```{r}
+train_df %>%
+  group_by(visitNumber) %>%
+  summarize(Revenue_Transactions = sum(REVENUE_GENERATED==TRUE),
+            NonRevenue_Transactions = sum(REVENUE_GENERATED==FALSE),
+            Total_Transactions = Revenue_Transactions + NonRevenue_Transactions,
+            Proportion_Revenue_Transaction = (Revenue_Transactions / Total_Transactions) * 100) %>%
+            #filter(Proportion_Revenue_Transaction !=0) %>%
+            ggplot() + geom_point(aes(x = log1p(visitNumber) , y = Proportion_Revenue_Transaction),alpha =0.2) 
+```
+
+The proportion of Revenue transaction increases till about visit number `r expm1(2)` and then slowly tapers out till about `r expm1(4)` . 
+Beyond `r expm1(4)` there are ocassional visit numbers which have high proportion of revenue transactions, but since they are few and far between, they will hardly constitute a trend.
+
+#####Analyzing Visit Start Time
+```{r}
+class(train_df$visitStartTime)
+train_df$visitStartTime1 <- strptime(train_df$visitStartTime,format = "c")
+train_df[1:5,"visitStartTime1"]
+```
+
+
+
+
